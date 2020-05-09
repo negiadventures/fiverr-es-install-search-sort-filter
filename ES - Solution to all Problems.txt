@@ -1,0 +1,305 @@
+
+1. I’d like to set up an ElasticSearch instance where I can create indices to find documents in different data sets.
+
+########### SOLUTION - INSTALLATION STEPS for ELASTICSEARCH ################
+ELASTICSEARCH INSTALLATION IN LINUX
+
+This installation is for a debian based system. 
+
+STEP 1:
+Run following commands to update repository:
+rpm --import https://artifacts.elastic.co/GPG-KEY-elasticsearch
+cd /etc/yum.repos.d/
+
+STEP 2:
+vi elasticsearch.repo
+#Add this entry in elasticsearch.repo:
+[elasticsearch]
+name=Elasticsearch repository for 7.x packages
+baseurl=https://artifacts.elastic.co/packages/7.x/yum
+gpgcheck=1
+gpgkey=https://artifacts.elastic.co/GPG-KEY-elasticsearch
+enabled=0
+autorefresh=1
+type=rpm-md
+
+STEP 3:
+Install elasticsearch and enable service for startup:
+sudo yum install --enablerepo=elasticsearch elasticsearch
+sudo systemctl daemon-reload
+sudo systemctl enable elasticsearch.service
+
+STEP 4:
+Update yml file:
+cd /etc/elasticsearch
+vi /etc/elaticsearch.yml
+#Add entries for enabling host ip and ports:
+transport.host: localhost
+transport.tcp.port: 9300
+http.port: 9200
+network.host: 0.0.0.0
+
+STEP 5:
+Start elasticsearch:
+systemctl start elasticsearch.service
+
+STEP 6:
+Test your instance:
+curl -X GET 'http://localhost:9200'
+
+NOTE: Elasticsearch will start once server is started.
+
+########### END SOLUTION - INSTALLATION STEPS for ELASTICSEARCH ################
+
+2. Each data set will have different fields, but the index and search options are similar.
+Upon creation of the index, each field is specified: type number or type text, and if the field should be searchable as fuzzy (with ngrams).
+########### SOLUTION - Index Creation with ngram tokens ################
+
+PUT
+http://localhost:9200/test_index
+
+BODY:
+{
+    "aliases": {},
+    "mappings": {
+        "properties": {
+            "text_field1": {
+                "type": "text",
+                "fields": {
+                    "raw": {
+                        "type": "keyword"
+                    }
+                },
+                "copy_to": [
+                    "suggest_field"
+                ],
+                "fielddata": true,
+                "analyzer": "my_analyzer"
+            },
+            "text_field2": {
+                "type": "text",
+                "fields": {
+                    "raw": {
+                        "type": "keyword"
+                    }
+                },
+                "fielddata": true,
+                "analyzer": "my_analyzer"
+            },
+            "int_field1": {
+                "type": "integer",
+                "fields": {
+                    "raw": {
+                        "type": "keyword"
+                    }
+                }
+            },
+            "int_field2": {
+                "type": "integer",
+                "fields": {
+                    "raw": {
+                        "type": "keyword"
+                    }
+                }
+            }
+        }
+    },
+    "settings": {
+        "index": {
+            "number_of_shards": "5",
+            "blocks": {
+                "read_only_allow_delete": "false"
+            },
+            "analysis": {
+                "analyzer": {
+                    "filter": [
+                       "lowercase",
+                       "asciifolding"
+                    ],
+                    "my_analyzer": {
+                        "type": "custom",
+                        "tokenizer": "my_tokenizer"
+                    }
+                },
+                "tokenizer": {
+                  "my_tokenizer": {
+                    "type": "ngram",
+                    "min_gram": 3,
+                    "max_gram": 3,
+                    "token_chars": [
+                      "letter",
+                      "digit",
+                      "whitespace"
+                    ]
+                  }
+                }
+            },
+            "number_of_replicas": "1"
+        }
+    }
+}
+
+
+In this case, min and max grams are 3, so if search text is "2 Quick Foxes." You will get results even if text contains any of these : [ Qui, uic, ick, Fox, oxe, xes ]
+
+########### END SOLUTION - Index Creation with ngram tokens ################
+
+
+3. The search query will always use the ‘should’ operator. For each field, searching fuzzy (true/false) and the weight within the results should be specified.
+For the fuzzy matching, we would like to have a proper fulltext fuzzy match. In our opinion, that includes searching for full words and grams, with a logical ranking:
+exact full query matches supersede matches of just one word
+exact full word matches supersede partial matches
+partial matches at the start of a word supersede matches in the middle of a word
+
+
+########### Insert sample data ################
+POST
+http://localhost:9200/_bulk
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"abacus is my name"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"abacus is my name bro!"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"hey! abacus is my name"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"abacus is fun to play"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"do you know the name of any game?"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"my house is nearby"}
+{ "index" : { "_index" : "test_index"} }
+{"text_field1":"lot of bacteria"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"100"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"500"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"2000"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"200"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"4500"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"350"}
+{ "index" : { "_index" : "test_index"} }
+{"int_field1":"900"}
+
+################################################
+
+########### SOLUTION - Query for search with sorting ################
+POST
+http://localhost:9200/test_index/_search
+
+{
+    "query": {
+        "bool": {
+            "should": [
+                {
+                    "match": {
+                        "text_field1": "abacus is my name"
+                    }
+                }
+            ]
+        }
+    },
+    "sort": [
+        {
+            "_script": {
+                "type": "number",
+                "script": {
+                    "source": "def text = \"abacus is my name\";def list = [\"abacus\",\"is\",\"my\",\"name\"]; return doc['text_field1.raw'].value.equalsIgnoreCase(text) ? 1: doc['text_field1.raw'].value.startsWith(text) ? 2: doc['text_field1.raw'].value.contains(text) ? 3: list.stream().anyMatch(s -> doc['text_field1.raw'].value.equalsIgnoreCase(s)) ? 4 : list.stream().anyMatch(s -> doc['text_field1.raw'].value.startsWith(s)) ? 5 : list.stream().anyMatch(s -> doc['text_field1.raw'].value.contains(s)) ? 6:7" },
+                "order": "asc"
+            }
+        }
+    ],
+    "size": 20
+}
+
+
+########## RESPONSE FOR ABOVE QUERY #############
+the Above query gives numbers in the sort and are sorted accordingly-
+1.Data exactly matches search text
+2.Data starts with search text
+3.Data contains search text
+4.Data equals any word of the search text
+5.Data starts with any word of the search text
+6.Data contains any word of the search text
+7.Any other scenario (includes ngram search EG: bacteria contains bac (abacus - ngram(3) gives "bac", hence it is in the RESPONSE))
+####################################################
+
+########### END SOLUTION - Query for search with sorting ################
+
+
+
+4.Additionally, I want to be able to filter on certain fields. These filters are valid variables and will always match the string. Filters should be combineable eg. multiple filters should be possible using the AND/must operator. The filters I’m looking for are:
+integer query < value
+integer query > value
+integer query >= value
+integer query <= value
+integer query == value
+string query == value
+string query (occurs in) comma separated value or array
+########### SOLUTION - Query for search with numeric filter ################
+
+### integer query > value (same for <,>=,<=,==)
+{
+    "query": {
+        "bool": {
+            "should": [
+                {
+                    "script": {
+                        "script": {
+                        	"source": "doc['int_field1'].size()>0 && doc['int_field1'].value > 500"
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "size": 20
+}
+
+### string query == value
+{
+    "query": {
+        "bool": {
+            "should": [
+                {
+                    "script": {
+                        "script": {
+                        	"source": "doc['text_field1'].size()>0 && doc['text_field1.raw'].value.equalsIgnoreCase(\"abacus is my name\")"
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "size": 20
+}
+
+
+###string query (occurs in) comma separated value or array (can use anyMatch instead of all match, to find any word in the list)
+{
+    "query": {
+        "bool": {
+            "should": [
+                {
+                    "script": {
+                        "script": {
+                        	"source": "def list = [\"abacus\",\"is\",\"my\",\"name\"]; doc['text_field1'].size()>0 && list.stream().allMatch(s -> doc['text_field1.raw'].value.contains(s))"
+                        }
+                    }
+                }
+            ]
+        }
+    },
+    "size": 20
+}
+
+########### END SOLUTION - Query for search with number filter ################
+
+
+I’m looking for the correct syntax to use at index creation, and the correct syntax to use at search and filter. Login data for the ElasticSearch instance, including indexes with sample search data:
+I have a running instance, please let me know if it would be practical to have access to that or if any extra information is handy.
+
+#### Shared all solutions with correct syntax, I have tested on my system.. Let me know if you need any help!!
