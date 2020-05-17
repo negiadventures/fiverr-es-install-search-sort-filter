@@ -32,7 +32,7 @@ sudo systemctl enable elasticsearch.service
 STEP 4:
 Update yml file:
 cd /etc/elasticsearch
-vi /etc/elaticsearch.yml
+vi /etc/elasticsearch/elaticsearch.yml
 #Add entries for enabling host ip and ports:
 transport.host: localhost
 transport.tcp.port: 9300
